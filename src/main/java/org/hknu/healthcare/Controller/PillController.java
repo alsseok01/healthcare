@@ -1,12 +1,13 @@
 package org.hknu.healthcare.Controller;
 
+import org.hknu.healthcare.DTO.PillDto;
+import org.hknu.healthcare.Serivce.PillIdentificationService;
+import org.hknu.healthcare.Serivce.NaturalLanguageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/pill")
@@ -15,29 +16,64 @@ public class PillController {
     @Autowired
     private PillIdentificationService pillIdentificationService;
 
-    @PostMapping("/identify")
-    public ResponseEntity<?> identifyPill(@RequestParam("image") MultipartFile image) {
-        try {
-            // 이미지 파일을 받아 알약 식별 서비스 호출
-            PillDto pillInfo = pillIdentificationService.identifyPillFromImage(image);
+    @Autowired
+    private NaturalLanguageService naturalLanguageService;
 
+    /**
+     * [기능 1] 텍스트로 알약 검색 (GET)
+     */
+    @GetMapping("/search")
+    public ResponseEntity<?> searchPillByText(@RequestParam("name") String pillName) {
+        try {
+            PillDto pillInfo = pillIdentificationService.searchPillByName(pillName);
             if (pillInfo == null) {
-                return ResponseEntity.status(404).body("일치하는 알약 정보를 찾을 수 없습니다.");
+                return ResponseEntity.status(404).body("'" + pillName + "'과(와) 일치하는 알약 정보를 찾을 수 없습니다.");
             }
-            return ResponseEntity.ok(pillInfo); // React Native로 알약 정보(JSON) 반환
+            return ResponseEntity.ok(pillInfo);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("서버 오류(텍스트 검색): " + e.getMessage());
+        }
+    }
+
+    /**
+     * [기능 2] 처방전/설명서 이미지 스캔 (POST)
+     */
+    @PostMapping("/analyze-image")
+    public ResponseEntity<?> analyzeImageForPills(@RequestParam("image") MultipartFile image) {
+        if (image.isEmpty()) {
+            return ResponseEntity.badRequest().body("이미지 파일이 비어있습니다.");
+        }
+        try {
+            List<PillDto> pillList = pillIdentificationService.analyzeImageForPills(image);
+            if (pillList == null || pillList.isEmpty()) {
+                return ResponseEntity.status(404).body("이미지에서 유효한 약품 정보를 찾을 수 없습니다.");
+            }
+            return ResponseEntity.ok(pillList);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("서버 오류(이미지 분석): " + e.getMessage());
+        }
+    }
+
+    /**
+     * [기능 3] 자연어(묘사)로 알약 검색 (GET) (새로 추가된 엔드포인트)
+     * Postman 테스트: GET http://localhost:8080/api/pill/search-by-description?q=하얗고 둥근 H 12
+     */
+    @GetMapping("/search-by-description")
+    public ResponseEntity<?> searchByDescription(@RequestParam("q") String description) {
+        try {
+            PillDto pillInfo = naturalLanguageService.searchByDescription(description);
+            if (pillInfo == null) {
+                return ResponseEntity.status(404).body("'" + description + "' 묘사와 일치하는 알약 정보를 찾을 수 없습니다.");
+            }
+            return ResponseEntity.ok(pillInfo); // 최종 PillDto 반환
 
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(500).body("서버 오류 발생: " + e.getMessage());
+            return ResponseEntity.status(500).body("서버 오류(묘사 검색): " + e.getMessage());
         }
     }
-}
-
-// 간단한 DTO 예시 (React Native로 반환할 형태)
-class PillDto {
-    private String pillName;
-    private String effect;
-    // ... 기타 정보
-
-    // Getters and Setters
 }

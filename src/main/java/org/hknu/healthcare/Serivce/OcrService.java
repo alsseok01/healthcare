@@ -1,9 +1,14 @@
 package org.hknu.healthcare.Serivce;
 
+import com.google.cloud.vision.v1.*;
+import com.google.protobuf.ByteString;
+import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-
+import java.util.ArrayList;
+import java.util.List;
+@Service
 public class OcrService {
     /**
      * Google Cloud Vision API를 호출하여 이미지에서 텍스트를 추출합니다.
