@@ -1,4 +1,4 @@
-package org.hknu.healthcare.Serivce;
+package org.hknu.healthcare.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,7 +37,8 @@ public class PillIdentificationService {
     @Value("${api.public.key}")
     private String publicApiKey;
 
-    private final String API_URL = "http://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList";
+    @Value("${api.public.url}")
+    private String publicApiUrl;
 
     /**
      * [기능 1] 텍스트(약 이름)로 약물 정보 검색
@@ -125,8 +126,8 @@ public class PillIdentificationService {
     /**
      * [공통 로직] 공공 API 호출
      */
-    private PillDto callPublicApi(String pillName) throws Exception {
-        URI uri = UriComponentsBuilder.fromUriString(API_URL)
+    public PillDto callPublicApi(String pillName) throws Exception {
+        URI uri = UriComponentsBuilder.fromUriString(publicApiUrl)
                 .queryParam("serviceKey", publicApiKey)
                 .queryParam("itemName", pillName)
                 .queryParam("type", "json")

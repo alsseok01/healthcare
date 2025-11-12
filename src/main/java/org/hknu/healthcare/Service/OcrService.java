@@ -1,4 +1,4 @@
-package org.hknu.healthcare.Serivce;
+package org.hknu.healthcare.Service;
 
 import com.google.cloud.vision.v1.*;
 import com.google.protobuf.ByteString;

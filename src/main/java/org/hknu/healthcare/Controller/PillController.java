@@ -1,8 +1,8 @@
 package org.hknu.healthcare.Controller;
 
 import org.hknu.healthcare.DTO.PillDto;
-import org.hknu.healthcare.Serivce.PillIdentificationService;
-import org.hknu.healthcare.Serivce.NaturalLanguageService;
+import org.hknu.healthcare.Service.PillIdentificationService;
+import org.hknu.healthcare.Service.NaturalLanguageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -60,7 +60,6 @@ public class PillController {
 
     /**
      * [기능 3] 자연어(묘사)로 알약 검색 (GET) (새로 추가된 엔드포인트)
-     * Postman 테스트: GET http://localhost:8080/api/pill/search-by-description?q=하얗고 둥근 H 12
      */
     @GetMapping("/search-by-description")
     public ResponseEntity<?> searchByDescription(@RequestParam("q") String description) {

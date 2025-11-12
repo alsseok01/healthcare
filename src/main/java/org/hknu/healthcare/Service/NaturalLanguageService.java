@@ -1,4 +1,4 @@
-package org.hknu.healthcare.Serivce;
+package org.hknu.healthcare.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -6,9 +6,9 @@ import org.hknu.healthcare.DTO.AiParseResultDto;
 import org.hknu.healthcare.DTO.PillDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.ChatClient;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -17,7 +17,6 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 
 @Service
 public class NaturalLanguageService {
@@ -31,7 +30,8 @@ public class NaturalLanguageService {
     @Value("${api.identification.key}")
     private String identificationApiKey;
 
-    private final String IDENTIFICATION_API_URL = "http://apis.data.go.kr/1471000/MdcinGrnIdntfcInfoService03/getMdcinGrnIdntfcInfoList";
+    @Value("${api.identification.url}")
+    private String identificationApiUrl;
 
     @Autowired
     public NaturalLanguageService(ChatClient chatClient, RestTemplate restTemplate, PillIdentificationService pillIdentificationService) {
@@ -75,22 +75,34 @@ public class NaturalLanguageService {
             }
             """;
 
-        Prompt prompt = new PromptTemplate(template).create(Map.of("description", description));
-        String aiResponse = chatClient.call(prompt).getResult().getOutput().getContent();
+        BeanOutputConverter<AiParseResultDto> outputConverter =
+                new BeanOutputConverter<>(AiParseResultDto.class);
 
-        logger.info("Gemini AI 응답 (JSON): {}", aiResponse);
+        String promptMessage = template.replace("{description}", description);
+
+        // 프롬프트에 출력 형식 정보를 추가
+        promptMessage += "\n" + outputConverter.getFormat();
 
         try {
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.readValue(aiResponse, AiParseResultDto.class);
+            Prompt prompt = new Prompt(promptMessage);
+
+            String aiResponse = chatClient.prompt()
+                        .user(promptMessage)
+                        .call()
+                        .content();
+
+
+            logger.info("Gemini AI 응답: {}", aiResponse);
+            return outputConverter.convert(aiResponse); // 안전한 파싱
+
         } catch (Exception e) {
-            logger.error("Gemini AI 응답 JSON 파싱 실패: {}", e.getMessage());
+            logger.error("Gemini AI 응답 DTO 변환 실패: {}", e.getMessage());
             return null;
         }
     }
 
     private String callIdentificationApi(AiParseResultDto result) {
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(IDENTIFICATION_API_URL)
+        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(identificationApiUrl)
                 .queryParam("serviceKey", identificationApiKey)
                 .queryParam("print_front", result.getImprint()) // AI가 추출한 각인
                 .queryParam("type", "json")
@@ -113,7 +125,7 @@ public class NaturalLanguageService {
             JsonNode body = root.path("body");
 
             if (body.path("totalCount").asInt() == 0) {
-                return null; // 검색 결과 없음
+                return null;
             }
 
             // "itemName" 필드 추출
