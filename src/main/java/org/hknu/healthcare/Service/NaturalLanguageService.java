@@ -1,139 +1,174 @@
 package org.hknu.healthcare.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hknu.healthcare.DTO.AiParseResultDto;
 import org.hknu.healthcare.DTO.PillDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
-
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 
 @Service
 public class NaturalLanguageService {
 
     private static final Logger logger = LoggerFactory.getLogger(NaturalLanguageService.class);
-
     private final ChatClient chatClient;
-    private final RestTemplate restTemplate;
-    private final PillIdentificationService pillIdentificationService; // 'e약은요' API 호출기 (재사용)
-
-    @Value("${api.identification.key}")
-    private String identificationApiKey;
-
-    @Value("${api.identification.url}")
-    private String identificationApiUrl;
+    private final PillIdentificationService pillIdentificationService;
 
     @Autowired
-    public NaturalLanguageService(ChatClient chatClient, RestTemplate restTemplate, PillIdentificationService pillIdentificationService) {
+    public NaturalLanguageService(ChatClient chatClient, PillIdentificationService pillIdentificationService) {
         this.chatClient = chatClient;
-        this.restTemplate = restTemplate;
         this.pillIdentificationService = pillIdentificationService;
     }
 
-    public PillDto searchByDescription(String description) throws Exception {
+    public PillDto searchByDescription(String description) {
+        // [단계 1] AI: 묘사를 분석하여 '추정 업체명'과 '특징' 추출
+        AiParseResultDto aiResult = extractFeaturesWithAi(description);
 
-        AiParseResultDto parsedResult = parseDescriptionWithAi(description);
-        if (parsedResult == null || parsedResult.getImprint() == null) {
-            logger.warn("Gemini AI가 묘사에서 각인을 추출하지 못했습니다.");
+        if (aiResult == null || aiResult.getCompany() == null) {
+            logger.warn("AI가 업체명을 추론하지 못했습니다.");
             return null;
         }
 
-        String itemName = callIdentificationApi(parsedResult);
-        if (itemName == null) {
-            logger.warn("낱알식별 API가 '" + parsedResult.getImprint() + "'에 해당하는 itemName을 찾지 못했습니다.");
+        logger.info("AI 추론 - 업체: {}, 앞: {}, 뒤: {}, 색: {}",
+                aiResult.getCompany(), aiResult.getFront_imprint(), aiResult.getBack_imprint(), aiResult.getColor());
+
+        // [단계 2] API 호출: 업체명으로 낱알식별 정보 리스트(원본 JSON) 조회
+        JsonNode apiItems = pillIdentificationService.searchRawPillsByCompany(aiResult.getCompany());
+
+        if (apiItems == null || apiItems.isEmpty()) {
+            logger.warn("해당 업체의 알약 정보를 찾을 수 없습니다.");
             return null;
         }
 
-        logger.info("최종 검색된 itemName: {}", itemName);
-        return pillIdentificationService.callPublicApi(itemName);
+        // [단계 3] 필터링: API 리스트 중에서 사용자 묘사(각인, 색상)와 일치하는 알약 찾기
+        JsonNode matchedItem = findBestMatch(apiItems, aiResult);
+
+        if (matchedItem != null) {
+            String itemName = matchedItem.path("ITEM_NAME").asText();
+            logger.info("최종 매칭 성공: {}", itemName);
+
+            // [단계 4] 매칭된 약 '이름'을 가지고 AI에게 상세 정보(효능, 복용법 등) 생성 요청
+            PillDto aiGeneratedDetail = generatePillDetailsWithAi(itemName);
+
+            if (aiGeneratedDetail != null) {
+                // 낱알식별 API에서 가져온 정확한 이미지 URL을 덮어씌움 (AI는 이미지를 못 주므로)
+                aiGeneratedDetail.setItemImage(matchedItem.path("ITEM_IMAGE").asText(null));
+                // 이름도 API 데이터로 명확히 설정
+                aiGeneratedDetail.setItemName(itemName);
+                return aiGeneratedDetail;
+            } else {
+                // AI 생성 실패 시 기본 정보만 반환 (비상용)
+                PillDto fallback = new PillDto();
+                fallback.setItemName(itemName);
+                fallback.setItemImage(matchedItem.path("ITEM_IMAGE").asText(null));
+                fallback.setEfcyQesitm("상세 정보를 생성하지 못했습니다.");
+                return fallback;
+            }
+
+        } else {
+            logger.info("일치하는 알약을 찾지 못했습니다.");
+            return null;
+        }
     }
 
-
-    private AiParseResultDto parseDescriptionWithAi(String description) {
-        logger.info("Gemini AI에 묘사 분석 요청: {}", description);
+    // [보조 메서드 1] 묘사에서 특징 추출 (AI)
+    private AiParseResultDto extractFeaturesWithAi(String description) {
+        BeanOutputConverter<AiParseResultDto> converter = new BeanOutputConverter<>(AiParseResultDto.class);
 
         String template = """
-            사용자의 알약 묘사: "{description}"
-            위 묘사에서 '모양(shape)', '색상(color)', '각인(imprint)' 정보를 추출해줘.
-            정보가 없으면 null로 처리해.
-            반드시 아래 JSON 형식으로만 응답해줘. 다른 말은 절대 덧붙이지 마.
-
+            사용자의 묘사: "{description}"
+            
+            1. 이 묘사에 가장 부합하는 알약의 '제조사(업체명)'를 추론해줘. (예: 한미약품, 종근당)
+            2. 알약의 앞면 각인, 뒷면 각인, 색상, 모양 정보를 추출해줘.
+            
+            반드시 아래 JSON 형식으로만 응답해줘.
             {
-              "shape": "추출한 모양",
-              "color": "추출한 색상",
-              "imprint": "추출한 각인"
+              "company": "추론한 업체명",
+              "front_imprint": "앞면 글자(없으면 null)",
+              "back_imprint": "뒷면 글자(없으면 null)",
+              "color": "색상(예: 하양, 분홍)",
+              "shape": "모양"
             }
             """;
 
-        BeanOutputConverter<AiParseResultDto> outputConverter =
-                new BeanOutputConverter<>(AiParseResultDto.class);
-
-        String promptMessage = template.replace("{description}", description);
-
-        // 프롬프트에 출력 형식 정보를 추가
-        promptMessage += "\n" + outputConverter.getFormat();
-
         try {
-            Prompt prompt = new Prompt(promptMessage);
-
-            String aiResponse = chatClient.prompt()
-                        .user(promptMessage)
-                        .call()
-                        .content();
-
-
-            logger.info("Gemini AI 응답: {}", aiResponse);
-            return outputConverter.convert(aiResponse); // 안전한 파싱
-
+            String prompt = template.replace("{description}", description);
+            String response = chatClient.prompt().user(prompt).call().content();
+            return converter.convert(response);
         } catch (Exception e) {
-            logger.error("Gemini AI 응답 DTO 변환 실패: {}", e.getMessage());
+            logger.error("AI 특징 추출 실패: {}", e.getMessage());
             return null;
         }
     }
 
-    private String callIdentificationApi(AiParseResultDto result) {
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(identificationApiUrl)
-                .queryParam("serviceKey", identificationApiKey)
-                .queryParam("print_front", result.getImprint()) // AI가 추출한 각인
-                .queryParam("type", "json")
-                .queryParam("numOfRows", 1); // 가장 정확한 1개만
+    // [보조 메서드 2] 약 이름으로 상세 정보 생성 (AI)
+    private PillDto generatePillDetailsWithAi(String itemName) {
+        logger.info("AI에게 상세 정보 생성 요청: {}", itemName);
 
-        if (result.getColor() != null && !result.getColor().isBlank()) {
-            uriBuilder.queryParam("color_class1", result.getColor());
-        }
-        if (result.getShape() != null && !result.getShape().isBlank()) {
-            uriBuilder.queryParam("shape", result.getShape());
-        }
+        BeanOutputConverter<PillDto> converter = new BeanOutputConverter<>(PillDto.class);
 
-        URI uri = uriBuilder.encode(StandardCharsets.UTF_8).build().toUri();
-        logger.info("낱알식별 API 요청 URI: {}", uri);
+        String template = """
+            약 이름: "{itemName}"
+            
+            위 약에 대한 정보를 의학적 지식을 바탕으로 상세히 알려줘.
+            다음 필드를 포함한 JSON 형식으로 응답해줘:
+            
+            - efcyQesitm: 효능 및 효과 (한글로 간단히 요약)
+            - useMethodQesitm: 용법 및 용량 (한글로 간단히 요약)
+            - atpnWarnQesitm: 사용상 주의사항 및 부작용 (한글로 간단히 요약)
+            
+            (itemName은 "{itemName}" 그대로 사용하고, 이미지는 null로 둬)
+            """;
+
+        // 포맷 가이드 추가 (중요)
+        String prompt = template.replace("{itemName}", itemName) + "\n" + converter.getFormat();
 
         try {
-            String responseString = restTemplate.getForObject(uri, String.class);
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(responseString);
-            JsonNode body = root.path("body");
-
-            if (body.path("totalCount").asInt() == 0) {
-                return null;
-            }
-
-            // "itemName" 필드 추출
-            return body.path("items").get(0).path("ITEM_NAME").asText(null);
-
+            String response = chatClient.prompt().user(prompt).call().content();
+            return converter.convert(response);
         } catch (Exception e) {
-            logger.error("낱알식별 API 호출 실패: {}", e.getMessage());
+            logger.error("AI 상세 정보 생성 실패: {}", e.getMessage());
             return null;
         }
+    }
+
+    // [보조 메서드 3] 필터링 로직 (Java)
+    private JsonNode findBestMatch(JsonNode items, AiParseResultDto aiResult) {
+        for (JsonNode item : items) {
+            String apiFront = item.path("PRINT_FRONT").asText("").trim();
+            String apiBack = item.path("PRINT_BACK").asText("").trim();
+            String apiColor = item.path("COLOR_CLASS1").asText("");
+
+            String userFront = aiResult.getFront_imprint();
+            String userBack = aiResult.getBack_imprint();
+            String userColor = aiResult.getColor();
+
+            // 1. 앞면 각인 비교
+            boolean frontMatch = true;
+            if (userFront != null && !userFront.isBlank()) {
+                frontMatch = apiFront.contains(userFront);
+            }
+
+            // 2. 뒷면 각인 비교
+            boolean backMatch = true;
+            if (userBack != null && !userBack.isBlank()) {
+                backMatch = apiBack.contains(userBack);
+            }
+
+            // 3. 색상 비교
+            boolean colorMatch = true;
+            if (userColor != null && !userColor.isBlank()) {
+                colorMatch = apiColor.contains(userColor);
+            }
+
+            // 모든 조건 만족 시 반환
+            if (frontMatch && backMatch && colorMatch) {
+                return item;
+            }
+        }
+        return null;
     }
 }

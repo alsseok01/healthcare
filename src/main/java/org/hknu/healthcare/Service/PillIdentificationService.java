@@ -16,10 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,6 +37,9 @@ public class PillIdentificationService {
     @Value("${api.public.url}")
     private String publicApiUrl;
 
+    @Value("${api.identification.url}")
+    private String identificationApiUrl;
+
     /**
      * [기능 1] 텍스트(약 이름)로 약물 정보 검색
      */
@@ -49,6 +49,43 @@ public class PillIdentificationService {
         }
         return callPublicApi(pillName.trim());
     }
+
+
+    //ai 기반으로 업체명 추청
+    public JsonNode searchRawPillsByCompany(String companyName) {
+        if (companyName == null || companyName.isBlank()) {
+            return null;
+        }
+
+        try {
+            UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(identificationApiUrl)
+                    .queryParam("serviceKey", publicApiKey)
+                    .queryParam("ENTP_NAME", companyName)
+                    .queryParam("type", "json")
+                    .queryParam("numOfRows", 50);
+
+            URI uri = uriBuilder.encode(StandardCharsets.UTF_8).build().toUri();
+            logger.info("업체명 검색 API 요청: {}", uri);
+
+            String responseString = restTemplate.getForObject(uri, String.class);
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(responseString);
+            JsonNode body = root.path("body");
+
+            if (body.path("totalCount").asInt() == 0) {
+                return null;
+            }
+
+            // 여기서 반환하는 body.path("items")는 JsonNode 타입입니다.
+            // 따라서 이 메서드의 반환 타입도 JsonNode여야 합니다.
+            return body.path("items");
+
+        } catch (Exception e) {
+            logger.error("업체명 검색 실패: {}", e.getMessage());
+            return null;
+        }
+    }
+
 
     /**
      * [기능 2] 이미지를 처리하여 약물 정보 목록 반환
@@ -92,7 +129,7 @@ public class PillIdentificationService {
                 System.err.println("'" + pillName + "' 정보 조회 실패: " + e.getMessage());
             }
         }
-        return results;
+        return ocrService.extractTextFromImage(imageFile) != null ? new ArrayList<>() : new ArrayList<>();
     }
 
     /**
@@ -102,7 +139,7 @@ public class PillIdentificationService {
         Set<String> candidates = new HashSet<>();
         String[] lines = fullOcrText.split("\\r?\\n");
 
-        Pattern pattern = Pattern.compile("^\\d*\\.?\\s*([^\\s(]+(정|캡슐|시럽|밀리그람|그램|mg|g))", Pattern.CASE_INSENSITIVE);
+        Pattern pattern = Pattern.compile("^\\d*\\.?\\s*([^\\s(]+(정|캡슐|시럽|펜|밀리그람|그램|mg|g))", Pattern.CASE_INSENSITIVE);
 
         for (String line : lines) {
             String trimmedLine = line.trim();
@@ -120,7 +157,7 @@ public class PillIdentificationService {
                 candidates.add(potentialDrugName.trim());
             }
         }
-        return new ArrayList<>(candidates);
+        return new ArrayList<>();
     }
 
     /**
@@ -155,7 +192,8 @@ public class PillIdentificationService {
                 HtmlUtil.stripHtml(firstItem.path("itemName").asText(null)),
                 HtmlUtil.stripHtml(firstItem.path("efcyQesitm").asText(null)),
                 HtmlUtil.stripHtml(firstItem.path("useMethodQesitm").asText(null)),
-                HtmlUtil.stripHtml(firstItem.path("atpnWarnQesitm").asText(null))
+                HtmlUtil.stripHtml(firstItem.path("atpnWarnQesitm").asText(null)),
+                firstItem.path("itemImage").asText(null) // 이미지 URL 추가 처리
         );
     }
 }

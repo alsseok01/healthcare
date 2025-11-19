@@ -10,12 +10,18 @@ import lombok.Setter;
 @NoArgsConstructor
 public class AiParseResultDto {
 
-    @JsonProperty("shape") // Gemini가 반환할 JSON 키
+    @JsonProperty("company")
+    private String company;
+
+    @JsonProperty("shape")
     private String shape;
 
     @JsonProperty("color")
     private String color;
 
-    @JsonProperty("imprint")
-    private String imprint;
+    @JsonProperty("front_imprint")
+    private String front_imprint;
+
+    @JsonProperty("back_imprint")
+    private String back_imprint;
 }
