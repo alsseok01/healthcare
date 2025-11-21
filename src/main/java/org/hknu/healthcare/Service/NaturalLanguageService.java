@@ -1,6 +1,7 @@
 package org.hknu.healthcare.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.hknu.healthcare.DTO.AiOcrResultDto;
 import org.hknu.healthcare.DTO.AiParseResultDto;
 import org.hknu.healthcare.DTO.PillDto;
 import org.slf4j.Logger;
@@ -9,6 +10,9 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.util.Collections;
+import java.util.List;
 
 @Service
 public class NaturalLanguageService {
@@ -23,8 +27,64 @@ public class NaturalLanguageService {
         this.pillIdentificationService = pillIdentificationService;
     }
 
+    public PillDto searchByNameWithAiFallback(String name) {
+        try {
+            PillDto apiResult = pillIdentificationService.searchPillByName(name);
+            if (apiResult != null) {
+                logger.info("'{}' 정보 공공 API에서 발견됨.", name);
+                return apiResult;
+            }
+        } catch (Exception e) {
+            logger.warn("공공 API 검색 중 오류 발생 (AI로 전환): {}", e.getMessage());
+        }
+
+        logger.info("'{}' 정보 공공 API에 없음. AI 생성 시작.", name);
+        PillDto aiResult = generatePillDetailsWithAi(name);
+
+        if (aiResult != null) {
+            aiResult.setItemImage(null);
+            aiResult.setItemName(name);
+        }
+
+        return aiResult;
+    }
+
+    public List<String> extractDrugNamesFromOcr(String ocrText) {
+        logger.info("AI에게 OCR 텍스트 파싱 요청");
+
+        BeanOutputConverter<AiOcrResultDto> converter = new BeanOutputConverter<>(AiOcrResultDto.class);
+
+        String template = """
+            아래는 처방전이나 약 봉투에서 추출한 OCR 텍스트야.
+            여기서 '약품명(약 이름)'만 정확하게 추출해서 리스트로 만들어줘.
+            
+            [OCR 텍스트]
+            "{ocrText}"
+            
+            [조건]
+            1. '소염진통제', '위장약', '식후 30분' 같은 일반 단어나 복용법은 제외해.
+            2. 약 이름에 용량(mg, g)이 붙어있다면 그대로 포함해. (예: 타이레놀정500mg)
+            3. 약 이름 뒤에 괄호나 특수문자가 붙어있으면 제거하고 약 이름만 추출해.
+            
+            반드시 아래 JSON 형식으로 응답해줘.
+            {
+              "drugNames": ["약이름1", "약이름2", ...]
+            }
+            """;
+
+        try {
+            String prompt = template.replace("{ocrText}", ocrText) + "\n" + converter.getFormat();
+            String response = chatClient.prompt().user(prompt).call().content();
+            AiOcrResultDto result = converter.convert(response);
+
+            return result != null ? result.getDrugNames() : Collections.emptyList();
+        } catch (Exception e) {
+            logger.error("AI OCR 파싱 실패: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
     public PillDto searchByDescription(String description) {
-        // [단계 1] AI: 묘사를 분석하여 '추정 업체명'과 '특징' 추출
         AiParseResultDto aiResult = extractFeaturesWithAi(description);
 
         if (aiResult == null || aiResult.getCompany() == null) {
@@ -35,7 +95,6 @@ public class NaturalLanguageService {
         logger.info("AI 추론 - 업체: {}, 앞: {}, 뒤: {}, 색: {}",
                 aiResult.getCompany(), aiResult.getFront_imprint(), aiResult.getBack_imprint(), aiResult.getColor());
 
-        // [단계 2] API 호출: 업체명으로 낱알식별 정보 리스트(원본 JSON) 조회
         JsonNode apiItems = pillIdentificationService.searchRawPillsByCompany(aiResult.getCompany());
 
         if (apiItems == null || apiItems.isEmpty()) {
@@ -43,24 +102,19 @@ public class NaturalLanguageService {
             return null;
         }
 
-        // [단계 3] 필터링: API 리스트 중에서 사용자 묘사(각인, 색상)와 일치하는 알약 찾기
         JsonNode matchedItem = findBestMatch(apiItems, aiResult);
 
         if (matchedItem != null) {
             String itemName = matchedItem.path("ITEM_NAME").asText();
             logger.info("최종 매칭 성공: {}", itemName);
 
-            // [단계 4] 매칭된 약 '이름'을 가지고 AI에게 상세 정보(효능, 복용법 등) 생성 요청
             PillDto aiGeneratedDetail = generatePillDetailsWithAi(itemName);
 
             if (aiGeneratedDetail != null) {
-                // 낱알식별 API에서 가져온 정확한 이미지 URL을 덮어씌움 (AI는 이미지를 못 주므로)
                 aiGeneratedDetail.setItemImage(matchedItem.path("ITEM_IMAGE").asText(null));
-                // 이름도 API 데이터로 명확히 설정
                 aiGeneratedDetail.setItemName(itemName);
                 return aiGeneratedDetail;
             } else {
-                // AI 생성 실패 시 기본 정보만 반환 (비상용)
                 PillDto fallback = new PillDto();
                 fallback.setItemName(itemName);
                 fallback.setItemImage(matchedItem.path("ITEM_IMAGE").asText(null));
@@ -74,7 +128,6 @@ public class NaturalLanguageService {
         }
     }
 
-    // [보조 메서드 1] 묘사에서 특징 추출 (AI)
     private AiParseResultDto extractFeaturesWithAi(String description) {
         BeanOutputConverter<AiParseResultDto> converter = new BeanOutputConverter<>(AiParseResultDto.class);
 
@@ -104,7 +157,6 @@ public class NaturalLanguageService {
         }
     }
 
-    // [보조 메서드 2] 약 이름으로 상세 정보 생성 (AI)
     private PillDto generatePillDetailsWithAi(String itemName) {
         logger.info("AI에게 상세 정보 생성 요청: {}", itemName);
 

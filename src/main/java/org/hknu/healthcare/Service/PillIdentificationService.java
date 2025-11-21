@@ -6,6 +6,7 @@ import org.hknu.healthcare.DTO.PillDto;
 import org.hknu.healthcare.util.HtmlUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
@@ -30,6 +31,10 @@ public class PillIdentificationService {
 
     @Autowired
     private RestTemplate restTemplate;
+
+    @Autowired
+    @Lazy
+    private NaturalLanguageService naturalLanguageService;
 
     @Value("${api.public.key}")
     private String publicApiKey;
@@ -93,20 +98,15 @@ public class PillIdentificationService {
     public List<PillDto> analyzeImageForPills(MultipartFile imageFile) throws Exception {
         String fullOcrText = ocrService.extractTextFromImage(imageFile);
         if (fullOcrText == null || fullOcrText.isEmpty()) {
-            throw new Exception("이미지에서 텍스트를 추출할 수 없습니다.");
+            logger.warn("OCR 텍스트 추출 실패");
+            return new ArrayList<>();
         }
 
-        logger.info("========================================");
-        logger.info("[Google OCR RAW Text Result]");
-        logger.info(fullOcrText);
-        logger.info("========================================");
+        logger.info("=== OCR 추출 텍스트 ===\n{}", fullOcrText);
 
-        List<String> drugNames = parseTextForDrugNames(fullOcrText);
+        List<String> drugNames = naturalLanguageService.extractDrugNamesFromOcr(fullOcrText);
 
-        logger.info("========================================");
-        logger.info("[Parsed Drug Name Candidates]");
-        logger.info(drugNames.toString());
-        logger.info("========================================");
+        logger.info("=== AI가 추출한 약 이름 후보 ===\n{}", drugNames);
 
         if (drugNames.isEmpty()) {
             return new ArrayList<>();
@@ -115,21 +115,17 @@ public class PillIdentificationService {
         List<PillDto> results = new ArrayList<>();
         for (String pillName : drugNames) {
             try {
-                PillDto info = callPublicApi(pillName);
+                PillDto info = naturalLanguageService.searchByNameWithAiFallback(pillName);
                 if (info != null) {
                     results.add(info);
                 }
+                Thread.sleep(100); // API 과부하 방지
 
-                Thread.sleep(250);
-
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.err.println("API 호출 대기 중 오류 발생: " + e.getMessage());
             } catch (Exception e) {
-                System.err.println("'" + pillName + "' 정보 조회 실패: " + e.getMessage());
+                logger.error("'{}' 정보 조회 실패: {}", pillName, e.getMessage());
             }
         }
-        return ocrService.extractTextFromImage(imageFile) != null ? new ArrayList<>() : new ArrayList<>();
+        return results;
     }
 
     /**

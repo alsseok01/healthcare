@@ -25,7 +25,7 @@ public class PillController {
     @GetMapping("/search")
     public ResponseEntity<?> searchPillByText(@RequestParam("name") String pillName) {
         try {
-            PillDto pillInfo = pillIdentificationService.searchPillByName(pillName);
+            PillDto pillInfo = naturalLanguageService.searchByNameWithAiFallback(pillName);
             if (pillInfo == null) {
                 return ResponseEntity.status(404).body("'" + pillName + "'과(와) 일치하는 알약 정보를 찾을 수 없습니다.");
             }
