@@ -8,4 +8,5 @@ import java.util.List;
 
 public interface PrescriptionRepository extends JpaRepository<Prescription, Long> {
     List<Prescription> findByEndDateBeforeAndDeletedFalse(LocalDate date);
+    List<Prescription> findByProfile_User_IdAndDeletedFalseOrderByIdAsc(Long userId);
 }
