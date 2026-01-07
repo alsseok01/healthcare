@@ -25,8 +25,8 @@ public class AppConfig {
         return new WebMvcConfigurer() {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
-                registry.addMapping("/api/**")
-                        .allowedOrigins("http://localhost:3000")
+                registry.addMapping("/**")
+                        .allowedOriginPatterns("*")
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .allowCredentials(true);
@@ -40,7 +40,7 @@ public class AppConfig {
                 .csrf(AbstractHttpConfigurer::disable)
 
                 .authorizeHttpRequests(authz -> authz
-                        .requestMatchers("/api/**").permitAll()
+                        .requestMatchers("/**").permitAll()
                         .anyRequest().authenticated()
                 )
 
