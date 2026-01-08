@@ -12,6 +12,10 @@
 
 # ⚙️ 실행 및 테스트 방법
 application.properties에 대한 설정이 필요
+
+
 Database, API keys, Google Cloud 설정
+
+
 ./gradlew bootRun 으로 실
    
